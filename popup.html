@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proxy Router</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Proxy Router</h1>
+    </div>
+
+    <div class="main-content">
+      <!-- Connection Status -->
+      <div class="status-section">
+        <div class="status-row">
+          <span class="label">Status:</span>
+          <span class="value" id="statusText">Disconnected</span>
+        </div>
+        <div class="status-row" id="ipRow">
+          <span class="label" id="ipLabel">Your IP:</span>
+          <span class="value" id="currentIP">Loading...</span>
+        </div>
+      </div>
+
+      <!-- SOCKS5 Connection Switch -->
+      <div class="switch-section">
+        <div class="switch-container">
+          <div class="switch-header">
+            <span class="switch-label">SOCKS5 Connection</span>
+            <div class="connection-status" id="socks5Status">
+              <span class="status-indicator" id="socks5Indicator"></span>
+              <span class="status-text" id="socks5StatusText">Disconnected</span>
+            </div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="socks5Switch">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="help-text" id="socks5HelpText">
+          Connect to SOCKS5 proxy server
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+      <div class="loading-spinner"></div>
+    </div>
+
+    <!-- Error Message -->
+    <div class="error-message" id="errorMessage" style="display: none;">
+      <span id="errorText"></span>
+      <button id="closeError" class="close-btn">&times;</button>
+    </div>
+
+    <!-- Privacy Policy Full Page -->
+    <div class="privacy-page" id="privacyPage" style="display: none;">
+      <div class="privacy-header">
+        <h2>Privacy Policy</h2>
+      </div>
+      <div class="privacy-content-full">
+        <div class="privacy-section">
+          <h3>Data Collection</h3>
+          <p>This extension collects minimal data necessary for its operation:</p>
+          <ul>
+            <li>Client ID for device identification</li>
+            <li>Proxy connection status</li>
+            <li>Extension settings and preferences</li>
+          </ul>
+        </div>
+        
+        <div class="privacy-section">
+          <h3>Data Usage</h3>
+          <p>Your data is used to:</p>
+          <ul>
+            <li>Maintain proxy connections</li>
+            <li>Provide service status updates</li>
+            <li>Store your preferences locally</li>
+          </ul>
+        </div>
+        
+        <div class="privacy-section">
+          <h3>Data Storage</h3>
+          <p>All data is stored locally on your device using Chrome's storage API. No personal information is transmitted to external servers except for proxy routing.</p>
+        </div>
+        
+        <div class="privacy-section">
+          <h3>Third-Party Services</h3>
+          <p>This extension may route traffic through third-party proxy servers. Please review their privacy policies separately.</p>
+        </div>
+        
+        <div class="privacy-section">
+          <h3>Your Rights</h3>
+          <p>You can:</p>
+          <ul>
+            <li>Disable the extension at any time</li>
+            <li>Clear stored data through Chrome settings</li>
+            <li>Contact us with privacy concerns</li>
+          </ul>
+        </div>
+        
+        <div class="privacy-actions">
+          <button id="acceptPrivacy" class="btn-accept">Accept & Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
