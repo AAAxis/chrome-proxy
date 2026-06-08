@@ -21,10 +21,7 @@ class SimplePopupController {
       currentIP: document.getElementById('currentIP'),
       ipLabel: document.getElementById('ipLabel'),
       ipRow: document.getElementById('ipRow'),
-      socks5Switch: document.getElementById('socks5Switch'),
-      socks5Status: document.getElementById('socks5Status'),
-      socks5Indicator: document.getElementById('socks5Indicator'),
-      socks5StatusText: document.getElementById('socks5StatusText'),
+      connectBtn: document.getElementById('connectBtn'),
       socks5HelpText: document.getElementById('socks5HelpText'),
       loadingOverlay: document.getElementById('loadingOverlay'),
       errorMessage: document.getElementById('errorMessage'),
@@ -32,6 +29,21 @@ class SimplePopupController {
       closeError: document.getElementById('closeError'),
       privacyPage: document.getElementById('privacyPage'),
       acceptPrivacy: document.getElementById('acceptPrivacy'),
+      licenseStatus: document.getElementById('licenseStatus'),
+      accountDot: document.getElementById('accountDot'),
+      accountPill: document.getElementById('accountPill'),
+      hero: document.querySelector('.hero'),
+      locationHint: document.getElementById('locationHint'),
+      countrySelect: document.getElementById('countrySelect'),
+      autoRow: document.getElementById('autoRow'),
+      autoFlag: document.getElementById('autoFlag'),
+      autoText: document.getElementById('autoText'),
+      upgradeSheet: document.getElementById('upgradeSheet'),
+      closeUpgrade: document.getElementById('closeUpgrade'),
+      buyProBtn: document.getElementById('buyProBtn'),
+      upgradeCodeInput: document.getElementById('upgradeCodeInput'),
+      applyCodeBtn: document.getElementById('applyCodeBtn'),
+      upgradeErr: document.getElementById('upgradeErr'),
       mainContent: document.querySelector('.main-content'),
       container: document.querySelector('.container')
     };
@@ -40,10 +52,10 @@ class SimplePopupController {
   }
 
   bindEvents() {
-    // SOCKS5 switch
-    if (this.elements.socks5Switch) {
-      this.elements.socks5Switch.addEventListener('change', () => {
-        this.toggleSOCKS5Connection();
+    // Connect button (tap to toggle, desktop-style)
+    if (this.elements.connectBtn) {
+      this.elements.connectBtn.addEventListener('click', () => {
+        this.toggleConnection();
       });
     }
 
@@ -51,6 +63,44 @@ class SimplePopupController {
     if (this.elements.closeError) {
       this.elements.closeError.addEventListener('click', () => {
         this.hideError();
+      });
+    }
+
+    // Country selection (Pro)
+    if (this.elements.countrySelect) {
+      this.elements.countrySelect.addEventListener('change', () => {
+        this.onCountryChange();
+      });
+    }
+
+    // Upgrade triggers: Free pill, the "Upgrade" hint, or the locked auto row.
+    if (this.elements.accountPill) {
+      this.elements.accountPill.addEventListener('click', () => {
+        if (!this.isPro) this.openUpgrade();
+      });
+    }
+    if (this.elements.locationHint) {
+      this.elements.locationHint.addEventListener('click', () => {
+        if (!this.isPro) this.openUpgrade();
+      });
+    }
+    if (this.elements.autoRow) {
+      this.elements.autoRow.addEventListener('click', () => {
+        if (!this.isPro) this.openUpgrade();
+      });
+    }
+    if (this.elements.closeUpgrade) {
+      this.elements.closeUpgrade.addEventListener('click', () => this.closeUpgrade());
+    }
+    if (this.elements.buyProBtn) {
+      this.elements.buyProBtn.addEventListener('click', () => this.buyPro());
+    }
+    if (this.elements.applyCodeBtn) {
+      this.elements.applyCodeBtn.addEventListener('click', () => this.applyCode());
+    }
+    if (this.elements.upgradeCodeInput) {
+      this.elements.upgradeCodeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') this.applyCode();
       });
     }
 
@@ -83,7 +133,11 @@ class SimplePopupController {
       
       // Load settings
       await this.loadSettings();
-      
+
+      // Load license state (auto-creates the account) then the server list
+      await this.loadLicense();
+      await this.loadServers();
+
       // Update UI based on loaded settings
       this.updateConnectionStatus();
       
@@ -104,17 +158,7 @@ class SimplePopupController {
       
       // Load settings with defaults
       this.isConnected = result.isConnected || false;
-      
-      console.log('Loaded settings:', {
-        isConnected: this.isConnected
-      });
-      
-      // Update switch based on loaded settings
-      if (this.elements.socks5Switch) {
-        this.elements.socks5Switch.checked = this.isConnected;
-        console.log('Set SOCKS5 switch to:', this.elements.socks5Switch.checked);
-      }
-      
+      console.log('Loaded settings:', { isConnected: this.isConnected });
     } catch (error) {
       console.error('Error loading settings:', error);
       // Use defaults if loading fails
@@ -138,41 +182,169 @@ class SimplePopupController {
     }
   }
 
-  async toggleSOCKS5Connection() {
+  async loadLicense() {
+    try {
+      const result = await this.sendMessage({ action: 'getLicense' });
+      this.renderLicense(result);
+    } catch (error) {
+      console.error('Error loading license:', error);
+    }
+  }
+
+  renderLicense(result) {
+    const ent = result.entitlement || { exists: false, is_pro: false };
+    const accountId = result.accountId || null;
+    this.accountId = accountId;
+    this.isPro = !!ent.is_pro;
+
+    // Header pill: short status + dot colour.
+    const pillText = ent.is_pro ? 'Pro' : 'Free';
+    const dotState = ent.is_pro ? 'pro' : 'nopro';
+    if (this.elements.licenseStatus) this.elements.licenseStatus.textContent = pillText;
+    if (this.elements.accountDot) this.elements.accountDot.className = 'account-dot ' + dotState;
+  }
+
+  // ── Server / country selection ──────────────────────────────────────────
+  async loadServers() {
+    try {
+      const result = await this.sendMessage({ action: 'getServers' });
+      this.renderServers(result || {});
+    } catch (error) {
+      console.error('Error loading servers:', error);
+    }
+  }
+
+  renderServers(result) {
+    const servers = Array.isArray(result.servers) ? result.servers : [];
+    const isPro = !!result.is_pro;
+    const selectedId = result.selectedServerId || null;
+    const def = servers.find((s) => s.is_default) || servers[0] || null;
+
+    if (isPro) {
+      // Pro: dropdown of countries.
+      if (this.elements.autoRow) this.elements.autoRow.style.display = 'none';
+      if (this.elements.locationHint) this.elements.locationHint.textContent = '';
+      const sel = this.elements.countrySelect;
+      if (sel) {
+        sel.style.display = 'block';
+        sel.innerHTML = '';
+        servers.forEach((s) => {
+          const opt = document.createElement('option');
+          opt.value = s.id;
+          opt.textContent = `${this.ccToFlag(s.country_code)}  ${s.country}${s.city ? ' · ' + s.city : ''}`;
+          if (s.id === selectedId || (!selectedId && s.is_default)) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+    } else {
+      // Free: locked auto row showing the default server.
+      if (this.elements.countrySelect) this.elements.countrySelect.style.display = 'none';
+      if (this.elements.autoRow) this.elements.autoRow.style.display = 'flex';
+      if (this.elements.locationHint) this.elements.locationHint.textContent = 'Upgrade to choose';
+      if (def) {
+        if (this.elements.autoFlag) this.elements.autoFlag.textContent = this.ccToFlag(def.country_code);
+        if (this.elements.autoText) this.elements.autoText.textContent = `Auto · ${def.country}`;
+      }
+    }
+  }
+
+  async onCountryChange() {
+    const serverId = this.elements.countrySelect?.value || null;
+    await this.sendMessage({ action: 'setServer', serverId });
+    // If already connected, re-dial through the newly chosen country.
+    if (this.isConnected) {
+      this.showLoading();
+      try {
+        await this.sendMessage({ action: 'toggleProxy', enabled: true });
+        await this.getCurrentIP();
+      } finally {
+        this.hideLoading();
+      }
+    }
+  }
+
+  // ── Upgrade flow (enter a Pro code, or buy — same link as desktop) ───────
+  openUpgrade() {
+    if (this.elements.upgradeErr) this.elements.upgradeErr.textContent = '';
+    if (this.elements.upgradeCodeInput) this.elements.upgradeCodeInput.value = '';
+    if (this.elements.upgradeSheet) this.elements.upgradeSheet.style.display = 'flex';
+  }
+
+  closeUpgrade() {
+    if (this.elements.upgradeSheet) this.elements.upgradeSheet.style.display = 'none';
+  }
+
+  buyPro() {
+    // RevenueCat hosted paywall (same as the desktop app). The account id is passed
+    // as the RC app_user_id path segment so the purchase ties to this account and its
+    // entitlement flips to Pro after checkout.
+    const base = 'https://pay.rev.cat/pzcicgzdkqlwadcj/';
+    const url = base + encodeURIComponent(this.accountId || '');
+    chrome.tabs.create({ url });
+  }
+
+  async applyCode() {
+    const code = (this.elements.upgradeCodeInput?.value || '').trim().toUpperCase();
+    if (!/^VPN-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+      if (this.elements.upgradeErr) this.elements.upgradeErr.textContent = 'Code must look like VPN-XXXX-XXXX-XXXX';
+      return;
+    }
+    this.showLoading();
+    try {
+      const result = await this.sendMessage({ action: 'setAccountId', accountId: code });
+      this.renderLicense(result);
+      await this.loadServers();
+      if (result.entitlement && result.entitlement.is_pro) {
+        this.closeUpgrade();
+      } else if (result.entitlement && result.entitlement.exists) {
+        if (this.elements.upgradeErr) this.elements.upgradeErr.textContent = 'That account has no active Pro subscription.';
+      } else {
+        if (this.elements.upgradeErr) this.elements.upgradeErr.textContent = 'Account code not found.';
+      }
+    } catch (e) {
+      if (this.elements.upgradeErr) this.elements.upgradeErr.textContent = 'Could not verify the code. Try again.';
+    } finally {
+      this.hideLoading();
+    }
+  }
+
+  // ISO 3166-1 alpha-2 → flag emoji (regional indicator pair).
+  ccToFlag(cc) {
+    if (!cc || cc.length !== 2) return '🌐';
+    const base = 0x1f1e6;
+    const A = 'A'.charCodeAt(0);
+    const up = cc.toUpperCase();
+    return String.fromCodePoint(base + (up.charCodeAt(0) - A), base + (up.charCodeAt(1) - A));
+  }
+
+  async toggleConnection() {
     if (this.isLoading) return;
-    
-    const newSOCKS5 = this.elements.socks5Switch.checked;
-    console.log('Toggling SOCKS5 to:', newSOCKS5);
-    
+
+    const target = !this.isConnected; // tap toggles current state
+    console.log('Connect button → target:', target);
+
     this.isLoading = true;
     this.showLoading();
-    
+
     try {
-      // Send message to background script to toggle proxy
-      const result = await this.sendMessage({
-        action: 'toggleProxy',
-        enabled: newSOCKS5
-      });
-      
+      const result = await this.sendMessage({ action: 'toggleProxy', enabled: target });
+
       if (result.success) {
-        this.isConnected = newSOCKS5;
+        this.isConnected = target;
         await this.saveSettings();
         this.updateConnectionStatus();
-        
-        if (newSOCKS5) {
-          await this.getCurrentIP();
-        } else {
-          // When disconnected, get the original IP
-          await this.getCurrentIP();
-        }
+        await this.getCurrentIP();
+      } else if (result.code && result.code.startsWith('LICENSE_')) {
+        await this.loadLicense();
+        this.updateConnectionStatus();
+        this.showError(result.error || 'A Pro license is required.');
       } else {
-        throw new Error(result.error || 'Failed to toggle proxy');
+        throw new Error(result.error || 'Failed to connect');
       }
-      
     } catch (error) {
-      console.error('Error toggling SOCKS5 connection:', error);
-      this.elements.socks5Switch.checked = !this.elements.socks5Switch.checked;
-      this.showError('Failed to toggle connection: ' + error.message);
+      console.error('Error toggling proxy connection:', error);
+      this.updateConnectionStatus();
+      this.showError('Failed to connect: ' + error.message);
     } finally {
       this.isLoading = false;
       this.hideLoading();
@@ -181,26 +353,27 @@ class SimplePopupController {
 
   updateConnectionStatus() {
     console.log('Updating connection status, connected:', this.isConnected);
-    
-    // Update status text
+
+    // Hero status text + connected styling
     if (this.elements.statusText) {
       this.elements.statusText.textContent = this.isConnected ? 'Connected' : 'Disconnected';
-      this.elements.statusText.className = this.isConnected ? 'value connected' : 'value disconnected';
     }
-    
-    // Update SOCKS5 status indicator
-    if (this.elements.socks5Indicator) {
-      this.elements.socks5Indicator.className = this.isConnected ? 'status-indicator connected' : 'status-indicator';
+    if (this.elements.hero) {
+      this.elements.hero.classList.toggle('connected', this.isConnected);
     }
-    
-    if (this.elements.socks5StatusText) {
-      this.elements.socks5StatusText.textContent = this.isConnected ? 'Connected' : 'Disconnected';
+
+    // Ring power button state (SVG icon stays; colour conveys state)
+    if (this.elements.connectBtn) {
+      this.elements.connectBtn.classList.toggle('connected', this.isConnected);
+      this.elements.connectBtn.setAttribute(
+        'aria-label', this.isConnected ? 'Disconnect' : 'Connect'
+      );
     }
-    
+
     if (this.elements.socks5HelpText) {
-      this.elements.socks5HelpText.textContent = this.isConnected 
-        ? 'Connected to SOCKS5 proxy server' 
-        : 'Connect to SOCKS5 proxy server';
+      this.elements.socks5HelpText.textContent = this.isConnected
+        ? 'Connected to your FoxyWall proxy'
+        : 'Tap to connect to your FoxyWall proxy';
     }
   }
 
@@ -305,7 +478,6 @@ class SimplePopupController {
     switch (message.action) {
       case 'connectionStatusChanged':
         this.isConnected = message.connected;
-        this.elements.socks5Switch.checked = message.connected;
         this.updateConnectionStatus();
         break;
       case 'ipChanged':

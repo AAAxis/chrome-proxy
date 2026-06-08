@@ -1,306 +1,248 @@
-// Proxy Router Extension - SOCKS5 Client Only
-class SOCKS5ProxyService {
-  constructor() {
-    this.isInitialized = false;
-    this.clientId = null;
-    this.isConnected = false;
-    this.apiBaseUrl = 'https://api.theholylabs.com';
-    this.proxyConfig = {
-      mode: "fixed_servers",
-      rules: {
-        singleProxy: {
-          scheme: "socks5",
-          host: "69.197.134.25",
-          port: 3128
-        }
+// FoxyWall Proxy — authenticated HTTP proxy client.
+// Proxy: Xray `http` inbound on the VPN server (port 1080, user/pass auth).
+// Chrome supplies credentials via webRequest.onAuthRequired (HTTP proxies only —
+// Chrome cannot authenticate SOCKS5, which is why the inbound is HTTP).
+// License: account code (VPN-XXXX-XXXX-XXXX) checked against Supabase get_entitlement
+// before the proxy can be enabled. See entitlement.js.
+
+importScripts('entitlement.js');
+
+// Proxy credentials are NOT hardcoded. They are fetched from Supabase
+// (get_proxy_credentials) at connect-time — only Pro accounts get them — and held
+// in chrome.storage.session, which is in-memory and never written to disk.
+const CREDS_KEY = 'proxyCreds'; // { host, port, username, password }
+
+async function getCreds() {
+  const r = await chrome.storage.session.get([CREDS_KEY]);
+  return r[CREDS_KEY] || null;
+}
+async function setCreds(c) {
+  await chrome.storage.session.set({ [CREDS_KEY]: c });
+}
+async function clearCreds() {
+  await chrome.storage.session.remove(CREDS_KEY);
+}
+
+function proxyConfigFor(creds) {
+  return {
+    mode: 'fixed_servers',
+    rules: {
+      singleProxy: { scheme: 'http', host: creds.host, port: creds.port },
+      bypassList: ['localhost', '127.0.0.1'],
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Proxy auth. MV3: listener MUST be registered synchronously at top level so
+// the service worker re-registers it on every wake. Credentials are read from
+// session storage (populated at connect). Track request IDs to avoid an infinite
+// challenge loop if the server rejects them.
+// ---------------------------------------------------------------------------
+const answeredAuthRequests = new Set();
+
+chrome.webRequest.onAuthRequired.addListener(
+  (details, callback) => {
+    (async () => {
+      const creds = await getCreds();
+      const isOurProxy =
+        details.isProxy &&
+        creds &&
+        details.challenger &&
+        details.challenger.host === creds.host &&
+        details.challenger.port === creds.port;
+
+      if (!isOurProxy) {
+        callback({});
+        return;
       }
+
+      if (answeredAuthRequests.has(details.requestId)) {
+        // Credentials already supplied once and rejected — don't loop.
+        console.warn('Proxy rejected credentials for request', details.requestId);
+        callback({ cancel: true });
+        return;
+      }
+
+      answeredAuthRequests.add(details.requestId);
+      callback({
+        authCredentials: { username: creds.username, password: creds.password },
+      });
+    })();
+  },
+  { urls: ['<all_urls>'] },
+  ['asyncBlocking']
+);
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => answeredAuthRequests.delete(details.requestId),
+  { urls: ['<all_urls>'] }
+);
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => answeredAuthRequests.delete(details.requestId),
+  { urls: ['<all_urls>'] }
+);
+
+// ---------------------------------------------------------------------------
+// Proxy control
+// ---------------------------------------------------------------------------
+async function connectProxy() {
+  // Account is auto-created; the proxy credentials themselves are the entitlement
+  // check — Supabase only returns them to active Pro accounts.
+  const accountId = await fwEnsureAccount();
+  if (!accountId) {
+    return {
+      success: false,
+      code: 'NETWORK',
+      error: 'Could not reach the license server. Check your connection.',
     };
   }
 
-  async initialize() {
-    try {
-      // Load existing client ID from storage or create a new one
-      const stored = await chrome.storage.local.get(['clientId']);
-      if (stored.clientId) {
-        this.clientId = stored.clientId;
-        console.log('Using existing client ID:', this.clientId);
-      } else {
-        // Generate more unique client ID with better entropy
-        const timestamp = Date.now();
-        const randomPart = Math.random().toString(36).substr(2, 9);
-        const sessionId = Math.random().toString(36).substr(2, 6);
-        this.clientId = `chrome-${randomPart}-${sessionId}-${timestamp}`;
-        await chrome.storage.local.set({ clientId: this.clientId });
-        console.log('Created new client ID:', this.clientId);
-      }
-      
-      this.isInitialized = true;
-      console.log('SOCKS5 Proxy service initialized');
-      return true;
-    } catch (error) {
-      console.error('Failed to initialize SOCKS5 service:', error);
-      return false;
-    }
+  // Selected country (Pro only). Free accounts auto-use the default server —
+  // the server id is ignored server-side for them.
+  const { selectedServerId } = await chrome.storage.local.get(['selectedServerId']);
+
+  let creds;
+  try {
+    creds = await fwGetProxyCredentials(accountId, selectedServerId || null);
+  } catch (e) {
+    return {
+      success: false,
+      code: 'NETWORK',
+      error: 'Could not reach the license server. Check your connection.',
+    };
   }
 
-  async testAPIConnection() {
-    try {
-      const response = await fetch(`${this.apiBaseUrl}/api/health`);
-      if (!response.ok) {
-        throw new Error(`API health check failed: ${response.status}`);
-      }
-      const data = await response.json();
-      console.log('API health check passed:', data);
-      return data;
-    } catch (error) {
-      console.error('API health check failed:', error);
-      throw new Error(`API health check failed: ${error.message}`);
-    }
+  if (!creds.authorized) {
+    // With free tier allowed, this only happens for unknown accounts or no servers.
+    const code = creds.reason === 'not_found' ? 'LICENSE_INVALID' : 'UNAVAILABLE';
+    const error =
+      creds.reason === 'not_found'
+        ? 'Account not recognised. Try reopening the panel.'
+        : 'No proxy server is available right now.';
+    return { success: false, code, error };
   }
 
-  async connect() {
-    try {
-      if (!this.isInitialized) {
-        await this.initialize();
+  await setCreds({
+    host: creds.host,
+    port: creds.port,
+    username: creds.username,
+    password: creds.password,
+  });
+  await chrome.proxy.settings.set({ value: proxyConfigFor(creds), scope: 'regular' });
+  await chrome.storage.local.set({
+    isConnected: true,
+    connectedServer: {
+      id: creds.server_id,
+      country: creds.country,
+      country_code: creds.country_code,
+      city: creds.city,
+    },
+  });
+  console.log('Proxy connected:', creds.country, `${creds.host}:${creds.port}`);
+  return { success: true, server: creds.server_id, country: creds.country };
+}
+
+async function disconnectProxy() {
+  await chrome.proxy.settings.clear({ scope: 'regular' });
+  await clearCreds();
+  await chrome.storage.local.set({ isConnected: false });
+  console.log('Proxy disconnected');
+  return { success: true };
+}
+
+async function getStatus() {
+  const r = await chrome.storage.local.get(['isConnected']);
+  return { success: true, isConnected: r.isConnected || false };
+}
+
+// On service worker start, re-assert proxy settings to match stored state
+// (Chrome keeps proxy settings across restarts, but make state consistent).
+async function syncStateOnStartup() {
+  try {
+    const { isConnected } = await chrome.storage.local.get(['isConnected']);
+
+    if (isConnected) {
+      // storage.session is cleared on browser restart, so the credentials needed
+      // to answer the proxy's auth challenge may be gone even though the proxy
+      // setting persisted. Re-fetch (also re-validates the license); if that fails,
+      // tear down so we never sit on a dead authenticated proxy.
+      const creds = await getCreds();
+      if (!creds) {
+        const result = await connectProxy();
+        if (!result.success) {
+          await disconnectProxy();
+        }
       }
-
-      // Register client with API (optional - don't fail if API is down)
-      try {
-        await this.registerClient();
-      } catch (error) {
-        console.warn('Failed to register with API, but continuing:', error.message);
-      }
-
-      // Set Chrome proxy configuration
-      await chrome.proxy.settings.set({
-        value: this.proxyConfig,
-        scope: 'regular'
-      });
-
-      this.isConnected = true;
-      await chrome.storage.local.set({
-        isConnected: true,
-        clientId: this.clientId
-      });
-
-      console.log('SOCKS5 proxy connected');
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to connect SOCKS5 proxy:', error);
-      return { success: false, error: error.message };
+    } else {
+      // Make sure no stale proxy setting survives a "disconnected" state.
+      const current = await chrome.proxy.settings.get({});
+      const isSet =
+        current.value && current.value.mode === 'fixed_servers' &&
+        current.levelOfControl === 'controlled_by_this_extension';
+      if (isSet) await chrome.proxy.settings.clear({ scope: 'regular' });
     }
-  }
-
-  async disconnect() {
-    try {
-      // Clear proxy settings
-      await chrome.proxy.settings.clear({
-        scope: 'regular'
-      });
-
-      // Update client status
-      if (this.clientId) {
-        await this.updateClientStatus(false);
-      }
-
-      this.isConnected = false;
-      await chrome.storage.local.set({
-        isConnected: false
-      });
-
-      console.log('SOCKS5 proxy disconnected');
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to disconnect SOCKS5 proxy:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  async registerClient() {
-    try {
-      // Generate unique device fingerprint
-      const deviceFingerprint = await this.generateDeviceFingerprint();
-      
-      const clientData = {
-        client_id: this.clientId,
-        device_type: 'desktop',
-        proxy_type: 'socks5',
-        country: 'unknown',
-        online: true,
-        platform: 'Chrome Extension',
-        user_agent: navigator.userAgent,
-        is_chrome_extension: true,
-        capabilities: ['socks5_proxy'],
-        registration_time: Date.now(),
-        is_proxy_enabled: true,
-        device_fingerprint: deviceFingerprint,
-        extension_version: chrome.runtime.getManifest().version,
-        unique_identifier: `${this.clientId}-${deviceFingerprint}`
-      };
-
-      const response = await fetch(`${this.apiBaseUrl}/api/clients`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(clientData)
-      });
-
-      if (!response.ok) {
-        throw new Error(`Client registration failed: ${response.status}`);
-      }
-
-      const result = await response.json();
-      console.log('Client registered successfully:', result);
-      return result;
-    } catch (error) {
-      console.error('Failed to register client:', error);
-      throw error;
-    }
-  }
-
-  async updateClientStatus(isEnabled) {
-    try {
-      const statusData = {
-        online: true,
-        proxy_type: 'socks5',
-        is_proxy_enabled: isEnabled
-      };
-
-      const response = await fetch(`${this.apiBaseUrl}/api/clients/${this.clientId}/status`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(statusData)
-      });
-
-      if (!response.ok) {
-        throw new Error(`Status update failed: ${response.status}`);
-      }
-
-      const result = await response.json();
-      console.log('Client status updated:', result);
-      return result;
-    } catch (error) {
-      console.error('Failed to update client status:', error);
-      throw error;
-    }
-  }
-
-  async generateDeviceFingerprint() {
-    try {
-      // Create a unique device fingerprint based on available browser properties in service worker
-      const fingerprint = {
-        userAgent: navigator.userAgent,
-        language: navigator.language,
-        platform: navigator.platform,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        timestamp: Date.now(),
-        // Add some randomness since screen properties aren't available in service worker
-        randomSeed: Math.random().toString(36).substr(2, 9)
-      };
-      
-      // Create a hash-like identifier from the fingerprint
-      const fingerprintString = JSON.stringify(fingerprint);
-      let hash = 0;
-      for (let i = 0; i < fingerprintString.length; i++) {
-        const char = fingerprintString.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // Convert to 32-bit integer
-      }
-      
-      return Math.abs(hash).toString(36);
-    } catch (error) {
-      console.error('Error generating device fingerprint:', error);
-      return Math.random().toString(36).substr(2, 9);
-    }
-  }
-
-  async getStatus() {
-    try {
-      const result = await chrome.storage.local.get(['isConnected', 'clientId']);
-      return {
-        success: true,
-        isConnected: result.isConnected || false,
-        clientId: result.clientId || this.clientId
-      };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
+  } catch (e) {
+    console.error('State sync failed:', e);
   }
 }
 
-class ProxyRouterExtension {
-  constructor() {
-    this.socks5Service = new SOCKS5ProxyService();
-    this.isConnected = false;
-    this.clientId = null;
-  }
-
-  async init() {
-    console.log('Proxy Router Extension initialized');
-    await this.socks5Service.initialize();
-    this.setupEventListeners();
-    await this.loadState();
-    console.log('Extension ready');
-  }
-
-  async loadState() {
-    try {
-      const result = await chrome.storage.local.get(['isConnected', 'clientId']);
-      this.isConnected = result.isConnected || false;
-      this.clientId = result.clientId || this.socks5Service.clientId;
-    } catch (error) {
-      console.error('Failed to load state:', error);
-    }
-  }
-
-  setupEventListeners() {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      this.handleMessage(message, sender, sendResponse);
-      return true;
-    });
-  }
-
-  async handleMessage(message, sender, sendResponse) {
+// ---------------------------------------------------------------------------
+// Messages from popup
+// ---------------------------------------------------------------------------
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  (async () => {
     try {
       switch (message.action) {
-        case 'getSettings':
-          const status = await this.socks5Service.getStatus();
+        case 'getSettings': {
+          const status = await getStatus();
           sendResponse({
             success: true,
-            settings: {
-              isProxyEnabled: status.isConnected,
-              clientId: status.clientId
-            }
+            settings: { isProxyEnabled: status.isConnected },
           });
           break;
+        }
 
-        case 'toggleProxy':
-          if (message.enabled) {
-            const result = await this.socks5Service.connect();
-            if (result.success) {
-              this.isConnected = true;
-              this.clientId = this.socks5Service.clientId;
-            }
-            sendResponse(result);
-          } else {
-            const result = await this.socks5Service.disconnect();
-            if (result.success) {
-              this.isConnected = false;
-            }
-            sendResponse(result);
-          }
+        case 'toggleProxy': {
+          const result = message.enabled
+            ? await connectProxy()
+            : await disconnectProxy();
+          sendResponse(result);
           break;
+        }
 
-        case 'updateSettings':
-          await chrome.storage.local.set({
-            isConnected: message.settings.isProxyEnabled || false,
-            clientId: message.settings.clientId || this.clientId
-          });
+        case 'getLicense': {
+          // Auto-create the account on first open (desktop-style, no activation step).
+          const accountId = await fwEnsureAccount();
+          const ent = await fwGetEntitlement(accountId);
+          sendResponse({ success: true, accountId, entitlement: ent });
+          break;
+        }
+
+        case 'setAccountId': {
+          // Restore / apply an existing Pro code (from desktop or a purchase).
+          const id = (message.accountId || '').trim().toUpperCase();
+          await fwSetAccountId(id);
+          const ent = await fwGetEntitlement(id);
+          sendResponse({ success: true, accountId: id, entitlement: ent });
+          break;
+        }
+
+        case 'getServers': {
+          const accountId = await fwEnsureAccount();
+          const list = await fwListServers(accountId);
+          const { selectedServerId } = await chrome.storage.local.get(['selectedServerId']);
+          sendResponse({ success: true, ...list, selectedServerId: selectedServerId || null });
+          break;
+        }
+
+        case 'setServer': {
+          // Persist the chosen country. Only meaningful for Pro; harmless for free
+          // (server-side forces the default regardless).
+          await chrome.storage.local.set({ selectedServerId: message.serverId || null });
           sendResponse({ success: true });
           break;
+        }
 
         default:
           sendResponse({ success: false, error: 'Unknown action' });
@@ -309,25 +251,16 @@ class ProxyRouterExtension {
       console.error('Error handling message:', error);
       sendResponse({ success: false, error: error.message });
     }
-  }
-}
-
-let proxyRouter = null;
-
-function initializeExtension() {
-  if (!proxyRouter) {
-    console.log('Initializing Proxy Router Extension');
-    proxyRouter = new ProxyRouterExtension();
-    proxyRouter.init();
-  }
-}
-
-chrome.runtime.onStartup.addListener(() => {
-  initializeExtension();
+  })();
+  return true; // async sendResponse
 });
 
-chrome.runtime.onInstalled.addListener(() => {
-  initializeExtension();
-});
+// Open the side panel when the toolbar icon is clicked (MetaMask-style panel).
+if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((e) => console.error('setPanelBehavior failed:', e));
+}
 
-initializeExtension();
+chrome.runtime.onStartup.addListener(syncStateOnStartup);
+chrome.runtime.onInstalled.addListener(syncStateOnStartup);
