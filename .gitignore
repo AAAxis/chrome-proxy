@@ -71,3 +71,7 @@ node_modules/
 # Build outputs
 build/
 dist/
+
+# Chrome extension packaging
+*.crx
+*.pem
