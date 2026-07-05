@@ -117,7 +117,7 @@ body {
   border-radius: 16px;
 }
 
-/* Ring power button */
+/* Ring power button (tap to connect/disconnect) */
 .power-ring {
   position: relative;
   width: 116px; height: 116px;

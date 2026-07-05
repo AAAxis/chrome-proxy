@@ -52,7 +52,8 @@ class SimplePopupController {
   }
 
   bindEvents() {
-    // Connect button (tap to toggle, desktop-style)
+    // Auto-connect still runs on launch, but the ring is tappable again so
+    // the user can manually reconnect/disconnect on demand.
     if (this.elements.connectBtn) {
       this.elements.connectBtn.addEventListener('click', () => {
         this.toggleConnection();
@@ -115,22 +116,32 @@ class SimplePopupController {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       this.handleMessage(message);
     });
+
+    // The panel now auto-opens the moment a connection attempt *starts*
+    // (see background.js's showPanelForActiveWindow), well before
+    // connectProxy() resolves a few seconds later -- without this, the
+    // popup would load its status once, show "Connecting...", and never
+    // learn the attempt actually succeeded (or failed) afterward.
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local') return;
+      if ('isConnected' in changes) {
+        this.isConnected = changes.isConnected.newValue || false;
+        this.updateConnectionStatus();
+        void this.getCurrentIP();
+      }
+    });
   }
 
   async loadInitialData() {
     try {
       console.log('Loading initial data...');
-      
-      // Check if privacy policy has been accepted
-      const privacyAccepted = await this.checkPrivacyAccepted();
-      
-      if (!privacyAccepted) {
-        this.showPrivacyPage();
-        return;
-      }
-      
+
+      // No data collection consent gate: this extension only ever handles
+      // proxy connection state and license/account lookups already covered
+      // by its own privacy terms, so there's no separate collection to
+      // disclose here.
       this.privacyAccepted = true;
-      
+
       // Load settings
       await this.loadSettings();
 
@@ -237,14 +248,14 @@ class SimplePopupController {
         });
       }
     } else {
-      // Free: locked auto row showing the default server.
+      // Always free, always the US default server -- shown as a fixed label
+      // rather than "Auto" or waiting on an IP lookup (which can be slow or
+      // fail outright), since there's nothing to actually pick.
       if (this.elements.countrySelect) this.elements.countrySelect.style.display = 'none';
       if (this.elements.autoRow) this.elements.autoRow.style.display = 'flex';
-      if (this.elements.locationHint) this.elements.locationHint.textContent = 'Upgrade to choose';
-      if (def) {
-        if (this.elements.autoFlag) this.elements.autoFlag.textContent = this.ccToFlag(def.country_code);
-        if (this.elements.autoText) this.elements.autoText.textContent = `Auto · ${def.country}`;
-      }
+      if (this.elements.locationHint) this.elements.locationHint.textContent = '';
+      if (this.elements.autoFlag) this.elements.autoFlag.textContent = this.ccToFlag((def?.country_code) || 'US');
+      if (this.elements.autoText) this.elements.autoText.textContent = def?.country || 'United States';
     }
   }
 
@@ -354,15 +365,15 @@ class SimplePopupController {
   updateConnectionStatus() {
     console.log('Updating connection status, connected:', this.isConnected);
 
-    // Hero status text + connected styling
     if (this.elements.statusText) {
-      this.elements.statusText.textContent = this.isConnected ? 'Connected' : 'Disconnected';
+      this.elements.statusText.textContent = this.isConnected ? 'Connected' : 'Connecting…';
     }
     if (this.elements.hero) {
       this.elements.hero.classList.toggle('connected', this.isConnected);
     }
 
-    // Ring power button state (SVG icon stays; colour conveys state)
+    // Ring is tappable again -- colour conveys state, aria-label conveys the
+    // available action.
     if (this.elements.connectBtn) {
       this.elements.connectBtn.classList.toggle('connected', this.isConnected);
       this.elements.connectBtn.setAttribute(
@@ -373,7 +384,7 @@ class SimplePopupController {
     if (this.elements.socks5HelpText) {
       this.elements.socks5HelpText.textContent = this.isConnected
         ? 'Connected to your FoxyWall proxy'
-        : 'Tap to connect to your FoxyWall proxy';
+        : 'Securing your connection automatically -- tap to retry';
     }
   }
 
@@ -394,11 +405,11 @@ class SimplePopupController {
             const networkInfo = data.network_info;
             const ip = networkInfo.public_ip || networkInfo.client_ip;
             const country = networkInfo.country;
-            
+
             if (this.elements.currentIP) {
               this.elements.currentIP.textContent = ip || 'Unknown';
             }
-            
+
             // Update country if we have that element
             if (country && country !== 'Unknown') {
               console.log(`Detected country: ${country}`);
@@ -436,9 +447,9 @@ class SimplePopupController {
           if (response.ok) {
             const data = await response.json();
             const ip = data.ip || data.query || data.origin;
-            
-            if (ip && this.elements.currentIP) {
-              this.elements.currentIP.textContent = ip;
+
+            if (ip) {
+              this.setLocationIp(ip);
               console.log(`IP detected from ${service}: ${ip}`);
               return; // Success, exit
             }
@@ -448,17 +459,32 @@ class SimplePopupController {
           continue; // Try next service
         }
       }
-      
-      // If all services fail, show offline message
-      if (this.elements.currentIP) {
-        this.elements.currentIP.textContent = 'Offline';
+
+      // All lookup services failed -- hide the row rather than show a
+      // contradictory "Offline"/"Error" next to an otherwise-Connected state.
+      if (this.elements.ipRow) {
+        this.elements.ipRow.style.display = 'none';
       }
-      
+
     } catch (error) {
       console.error('Error getting current IP:', error);
-      if (this.elements.currentIP) {
-        this.elements.currentIP.textContent = 'Error';
+      if (this.elements.ipRow) {
+        this.elements.ipRow.style.display = 'none';
       }
+    }
+  }
+
+  // Was called above but never defined -- every successful IP lookup threw,
+  // got silently swallowed by that loop's own per-service catch, and fell
+  // through to "hide the row" even when a service had just returned a valid
+  // IP. Restores the row's visibility too, in case an earlier failed attempt
+  // (e.g. before the proxy finished connecting) had already hidden it.
+  setLocationIp(ip) {
+    if (this.elements.currentIP) {
+      this.elements.currentIP.textContent = ip;
+    }
+    if (this.elements.ipRow) {
+      this.elements.ipRow.style.removeProperty('display');
     }
   }
 

@@ -9,7 +9,7 @@
 <body>
   <div class="container">
     <div class="main-content">
-      <!-- Connection hero — tap the ring to connect (desktop-style) -->
+      <!-- Connection hero — tap the ring to connect/disconnect (desktop-style) -->
       <div class="hero">
         <button class="power-ring" id="connectBtn" type="button" aria-label="Connect">
           <span class="power-ring-track"></span>
@@ -21,26 +21,19 @@
             </svg>
           </span>
         </button>
-        <div class="hero-status" id="statusText">Disconnected</div>
-        <p class="connect-help" id="socks5HelpText">Tap to connect</p>
+        <div class="hero-status" id="statusText">Connecting…</div>
+        <p class="connect-help" id="socks5HelpText">Securing your connection automatically -- tap to retry</p>
         <div class="hero-ip-row" id="ipRow">
           <span class="hero-ip-label" id="ipLabel">IP</span>
           <span class="hero-ip" id="currentIP">Loading…</span>
         </div>
       </div>
 
-      <!-- Location card — Free: auto (locked). Pro: country picker -->
       <div class="card" id="locationCard">
         <div class="card-row">
           <span class="card-title">Location</span>
-          <span class="account-pill" id="accountPill" title="Your account">
-            <span class="account-dot" id="accountDot"></span>
-            <span class="account-pill-text" id="licenseStatus">Free</span>
-          </span>
         </div>
-        <!-- Pro: choose a country -->
         <select id="countrySelect" class="country-select" style="display: none;"></select>
-        <!-- Free: forced default server, shown as the country -->
         <div class="auto-row" id="autoRow" style="display: none;">
           <span class="auto-flag" id="autoFlag">🌐</span>
           <span class="auto-text" id="autoText">Auto</span>
@@ -60,24 +53,6 @@
       <button id="closeError" class="close-btn">&times;</button>
     </div>
 
-    <!-- Upgrade sheet — enter a Pro code or buy (same link as desktop) -->
-    <div class="sheet" id="upgradeSheet" style="display: none;">
-      <div class="sheet-card">
-        <div class="sheet-head">
-          <h2>Upgrade to Pro</h2>
-          <button class="close-btn" id="closeUpgrade" type="button">&times;</button>
-        </div>
-        <p class="sheet-sub">Unlock every country and pick your location.</p>
-        <button class="btn-accept sheet-buy" id="buyProBtn" type="button">Get Pro</button>
-        <div class="sheet-or"><span>or enter your code</span></div>
-        <div class="license-input-row">
-          <input type="text" id="upgradeCodeInput" placeholder="VPN-XXXX-XXXX-XXXX"
-                 maxlength="18" spellcheck="false" autocomplete="off">
-          <button class="btn-accept" id="applyCodeBtn" type="button">Apply</button>
-        </div>
-        <p class="sheet-err" id="upgradeErr"></p>
-      </div>
-    </div>
 
     <!-- Privacy Policy Full Page -->
     <div class="privacy-page" id="privacyPage" style="display: none;">
